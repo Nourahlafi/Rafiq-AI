@@ -64,13 +64,25 @@ p, label, span, li, .stMarkdown { color:#e2e8f0 !important; }
 
 def prepare_file(uploaded_file):
     """يقرأ الملف مرة وحدة ويخزنه في Chroma"""
-    if st.session_state.get("ingested") != uploaded_file.name:
+    if st.session_state.get("ingested") == uploaded_file.name:
+        return
+    data = uploaded_file.getvalue()
+    if not data:
+        st.error("الملف فاضي أو ما انرفع كامل، ارفعيه من جديد.")
+        return
+    tmp_path = None
+    try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
-            f.write(uploaded_file.getvalue())
+            f.write(data)
+            tmp_path = f.name
         with st.spinner("أقرأ ملفك..."):
-            ingest_pdf(f.name, source=uploaded_file.name)
-        os.remove(f.name)
+            ingest_pdf(tmp_path, source=uploaded_file.name)
         st.session_state.ingested = uploaded_file.name
+    except Exception as e:
+        st.error(f"ما قدرت أقرأ الملف: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def get_answer(question: str, uploaded_file) -> str:
@@ -83,7 +95,8 @@ uploaded_file = st.file_uploader("ارفع ملفك الجامعي (PDF)", type=
 
 if uploaded_file is not None:
     prepare_file(uploaded_file)
-    st.success(f"تم رفع الملف: {uploaded_file.name}")
+    if st.session_state.get("ingested") == uploaded_file.name:
+        st.success(f"تم رفع الملف: {uploaded_file.name}")
 
 WELCOME = "هلا! أنا رفيق \u2728 ارفع ملفك الجامعي وأجاوبك من محتواه."
 
