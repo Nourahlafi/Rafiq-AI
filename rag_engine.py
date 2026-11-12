@@ -1,5 +1,7 @@
-"""رفيق: RAG + وكيل (Agent) = بحث في المقاطع + أدوات يستدعيها Gemini"""
+"""رفيق: RAG + وكيل (Agent) = بحث في المقاطع + أدوات الحساب"""
 import os
+import re
+import time
 from google import genai
 from google.genai import types
 
@@ -8,7 +10,7 @@ from vector_store import add_chunks, search_chunks
 
 GEMINI_MODEL = "gemini-3.8-flash"
 MODELS = [GEMINI_MODEL, "gemini-flash-latest"]
-GPA_WORDS = ("معدل", "gpa", "احسب")
+GPA_WORDS = ("معدل", "معد", "gpa", "احسب")
 
 SYSTEM = """أنت رفيق، مساعد جامعي. أجب بالعربية الواضحة اعتماداً على المقاطع المرفقة فقط.
 إذا كانت المقاطع بالإنجليزية فاشرحها بالعربية.
@@ -18,10 +20,20 @@ SYSTEM = """أنت رفيق، مساعد جامعي. أجب بالعربية ا�
 إذا طلب المستخدم حساب معدل، استخدم الأداة calculate_gpa ولا تحسب بنفسك."""
 
 
+def calculate_gpa(grades: list[float], credit_hours: list[int]) -> str:
+    """أداة الوكيل: تحسب المعدل الفصلي من نقاط كل مادة وعدد ساعاتها."""
+    if not grades or len(grades) != len(credit_hours) or sum(credit_hours) == 0:
+        return "عدد الدرجات لازم يساوي عدد الساعات."
+    total = sum(g * h for g, h in zip(grades, credit_hours))
+    return f"المعدل الفصلي = {total / sum(credit_hours):.2f}"
+
+
 def quick_gpa(question):
     """يحسب المعدل مباشرة بدون Gemini، ومن أي صيغة، بدون تحديد عدد المواد"""
     q = question.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     if not any(w in q.lower() for w in ("معد", "معج", "gpa")):
+        return None
+    if not any(w in q.lower() for w in ("احسب", "حساب", "gpa")):
         return None
     get = lambda s: [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
     if "ساع" in q:
@@ -58,28 +70,33 @@ def ask_gemini(question, results):
     use_tool = any(w in question.lower() for w in GPA_WORDS)
     first_error = None
     for model in MODELS:
-        try:
-            resp = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM,
-                    tools=[calculate_gpa] if use_tool else None,
-                ),
-            )
-            return resp.text
-        except Exception as e:
-            first_error = first_error or e
+        for _ in range(2):
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM,
+                        tools=[calculate_gpa] if use_tool else None,
+                    ),
+                )
+                return resp.text
+            except Exception as e:
+                first_error = first_error or e
+                time.sleep(2)
     raise first_error
 
 
 def answer_question(question, source):
+    quick = quick_gpa(question)
+    if quick:
+        return quick
+
     if "GEMINI_API_KEY" not in os.environ:
         return "مفتاح Gemini غير مضبوط."
 
     results = search(question, k=4, source=source)
-    wants_gpa = any(w in question.lower() for w in GPA_WORDS)
-    if not results and not wants_gpa:
+    if not results and not any(w in question.lower() for w in GPA_WORDS):
         return "ما لقيت نص في هذا الملف."
 
     try:
