@@ -8,27 +8,38 @@ from vector_store import add_chunks, search_chunks
 
 GEMINI_MODEL = "gemini-3.8-flash"
 MODELS = [GEMINI_MODEL, "gemini-flash-latest"]
-MIN_SCORE = 0.25
 GPA_WORDS = ("معدل", "gpa", "احسب")
 
 SYSTEM = """أنت رفيق، مساعد جامعي. أجب بالعربية الواضحة اعتماداً على المقاطع المرفقة فقط.
 إذا كانت المقاطع بالإنجليزية فاشرحها بالعربية.
-إذا لم تجد الجواب فيها، قل بالضبط: ما لقيت الجواب في المستند.
+إذا لم تجد الجواب في المقاطع أو كانت غير مرتبطة بالسؤال، قل بالضبط: ما لقيت الجواب في المستند.
 اذكر رقم الصفحة بين قوسين بعد المعلومة، مثل (ص4).
 لا تخترع أي معلومة من خارج المقاطع.
 إذا طلب المستخدم حساب معدل، استخدم الأداة calculate_gpa ولا تحسب بنفسك."""
 
 
-def calculate_gpa(grades: list[float], credit_hours: list[int]) -> str:
-    """أداة الوكيل: تحسب المعدل الفصلي من نقاط كل مادة وعدد ساعاتها."""
-    if not grades or len(grades) != len(credit_hours):
-        return "عدد الدرجات لازم يساوي عدد الساعات."
-    total = sum(g * h for g, h in zip(grades, credit_hours))
-    return f"المعدل الفصلي = {total / sum(credit_hours):.2f}"
+def quick_gpa(question):
+    """يحسب المعدل مباشرة بدون Gemini، ومن أي صيغة، بدون تحديد عدد المواد"""
+    q = question.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    if not any(w in q.lower() for w in ("معد", "معج", "gpa")):
+        return None
+    get = lambda s: [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
+    if "ساع" in q:
+        before, after = q.split("ساع", 1)
+        grades, hours = get(before), get(after)
+    else:
+        nums = get(q)
+        if len(nums) % 2 == 0:
+            grades, hours = nums[:len(nums) // 2], nums[len(nums) // 2:]
+        else:
+            grades, hours = nums, [1] * len(nums)
+    if not grades or len(grades) != len(hours):
+        return None
+    return calculate_gpa(grades, [int(h) for h in hours])
 
 
 def ingest_pdf(path, source=None):
-    """قراءة الملف -> تقطيع -> تخزين في Chroma"""
+    """قراءة الملف -> تقطيع -> تخزين في Chroma، ويرجع عدد المقاطع"""
     docs, metas, ids = process_pdf(path, source)
     return add_chunks(docs, metas, ids)
 
@@ -67,9 +78,9 @@ def answer_question(question, source):
         return "مفتاح Gemini غير مضبوط."
 
     results = search(question, k=4, source=source)
-    results = [r for r in results if r["score"] >= MIN_SCORE]
-    if not results and not any(w in question.lower() for w in GPA_WORDS):
-        return "ما لقيت الجواب في المستند."
+    wants_gpa = any(w in question.lower() for w in GPA_WORDS)
+    if not results and not wants_gpa:
+        return "ما لقيت نص في هذا الملف."
 
     try:
         return ask_gemini(question, results)
